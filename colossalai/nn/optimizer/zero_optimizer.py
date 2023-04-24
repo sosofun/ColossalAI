@@ -79,7 +79,7 @@ class ZeroOptimizer(ColossalaiOptimizer):
         self.clipping_flag = clipping_norm > 0.0
         self.max_norm = clipping_norm
         self.p_index = []
-        self.gradient_accumulation = gradient_accumulation
+        self.gradient_accumulation = getattr(module, 'gradient_accumulation', gradient_accumulation)
 
         if self.clipping_flag:
             assert norm_type == 2.0, "ZeroOptimizer only supports L2 norm now"
