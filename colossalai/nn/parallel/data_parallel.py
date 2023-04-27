@@ -315,6 +315,11 @@ class ZeroDDP(ColoDDP):
             if not is_ddp_ignored(param):
                 setattr(param, "_gemini_reduced", False)
 
+    def should_gradient_accumulation(self):
+        #call by optim
+        # print(f"[grad] in should_gradient_accumulation, iter={(self.gradient_accumulation_iter + 1)}/{self.gradient_accumulation}")
+        return (self.gradient_accumulation_iter + 1) != self.gradient_accumulation
+
     def _post_backward(self):
         if self.chunk_manager.accessed_mem != 0:
             error_params = ["Reduction failed at followed parameters:"]
