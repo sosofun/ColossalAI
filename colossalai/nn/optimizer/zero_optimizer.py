@@ -136,19 +136,24 @@ class ZeroOptimizer(ColossalaiOptimizer):
                         print(f"[{tag}]gid={gid},pid={pid},read gradient_accumulation, grad={fake_param.grad}")
 
     def _gradient_accumulation(self, debug=False):
-        # set grad ptr to chunk16
-        self._set_grad_ptr(debug)
-        if debug:
-            self.print_grad(tag='after_set_grad_ptr')
-        
-        #Update the fp16 chunks via their fp32 chunks
-        for chunk16 in self.chunk16_set:
-            chunk16.optim_update()
+        if getattr(self.module, 'should_gradient_accumulation', None) is not None:
+            should_gradient_accumulation = self.module.should_gradient_accumulation()
+            # print(f"[grad] =======> should_gradient_accumulation = {should_gradient_accumulation} ")
+            if should_gradient_accumulation:
+                # set grad ptr to chunk16
+                self._set_grad_ptr(debug)
+                if debug:
+                    self.print_grad(tag='after_set_grad_ptr')
+                
+                #Update the fp16 chunks via their fp32 chunks
+                for chunk16 in self.chunk16_set:
+                    chunk16.optim_update()
 
-        if debug:
-            self.print_grad(tag='after_optim_update')
+                if debug:
+                    self.print_grad(tag='after_optim_update')
 
     def _set_grad_ptr(self, use_saved_grad=False, debug=False):
+
         for gid, group in enumerate(self.param_groups):
             for pid, fake_param in enumerate(group['params']):
                 chunk32 = self.param_to_chunk32[fake_param]
@@ -289,9 +294,9 @@ class ZeroOptimizer(ColossalaiOptimizer):
     def backward(self, loss: torch.Tensor):
         loss = self.loss_scale * loss
         self.optim_state = OptimState.SCALED
-        self.print_grad(tag='before_module.backward')
         self.module.backward(loss)
-        self.print_grad(tag='after_module.backward')
+        if self.gradient_accumulation > 1:
+            self._gradient_accumulation(debug=False)
 
     def backward_by_grad(self, tensor: torch.Tensor, grad: torch.Tensor):
         # This function is called except the last stage of pipeline parallel
