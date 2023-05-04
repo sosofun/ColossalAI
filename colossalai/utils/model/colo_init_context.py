@@ -2,11 +2,24 @@ from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 import torch
 from torch import nn
+import torch.distributed as dist
 
 from colossalai.nn.parallel.layers import ColoEmbedding, ColoLinear, register_colo_module
-from colossalai.tensor import ColoParameter, ColoTensor, ProcessGroup
+from colossalai.tensor import ColoParameter, ColoTensor, ComputePattern, ComputeSpec, ProcessGroup, ReplicaSpec, ShardSpec, DistSpecManager
+from colossalai.core import global_context as gpc
 
 from .utils import InsertPostInitMethodToModuleSubClasses
+
+# Parameter Sharding Strategies for Tensor Parallelism
+def split_param_single_dim_tp1d(dim: int, param: ColoParameter, pg: ProcessGroup):
+    spec = (ShardSpec([dim], [pg.tp_world_size()]), ComputeSpec(ComputePattern.TP1D))
+    param.set_tensor_spec(*spec)
+
+def split_param_row_tp1d(param: ColoParameter, pg: ProcessGroup):
+    split_param_single_dim_tp1d(0, param, pg)
+
+def split_param_col_tp1d(param: ColoParameter, pg: ProcessGroup):
+    split_param_single_dim_tp1d(-1, param, pg)
 
 # find named_params includes replica
 
@@ -72,7 +85,8 @@ class ColoInitContext(InsertPostInitMethodToModuleSubClasses):
                  device: torch.device = torch.device('cpu'),
                  dtype: torch.dtype = torch.float,
                  default_pg: Optional[ProcessGroup] = None,
-                 default_dist_spec=None):
+                 default_dist_spec=None,
+                 enable_tp_split=None):
         """
         Args:
             device (torch.device): the device where parameters initialized are resident. Defaults to torch.device('cpu').
@@ -87,6 +101,7 @@ class ColoInitContext(InsertPostInitMethodToModuleSubClasses):
         self._register_colo_modules()
         self._default_pg = default_pg
         self._default_dist_spec = default_dist_spec
+        self.enable_tp_split = enable_tp_split
 
     def _register_colo_modules(self):
         register_colo_module(torch.nn.Linear, ColoLinear())
@@ -100,10 +115,22 @@ class ColoInitContext(InsertPostInitMethodToModuleSubClasses):
         The function to call at the end of the constructor of each module.
         FIXME(fjr) The module may be passed to this function multiple times?
         """
+        DEBUG = False
+        if DEBUG:
+            print(f"[init]_post_init_method, module = {type(module)} ")
+            for mn, sub_module in module.named_modules():
+                print(f"[init] colect mn={mn}, sub_module={type(sub_module)}")
+            print("----"*10)
         name_list = []
         for name, param in _named_params_with_replica(module):
+            if DEBUG:
+                print(f"[init] _named_params name={name}, param={type(param)}")
             if type(param) is ColoParameter:
+                if self.enable_tp_split is not None:
+                    self.enable_tp_split(param, name)
                 continue
+
+            torch.cuda.empty_cache()
 
             split = name.rfind('.')
             if split >= 0:    # param in submodule
@@ -112,18 +139,21 @@ class ColoInitContext(InsertPostInitMethodToModuleSubClasses):
             else:
                 module_name = ''    # param in current module
                 param_name = name
-            name_list.append((module_name, param_name))
+            name_list.append(((name, module_name), param_name))
 
-        replaced_tensors = dict(
-        )    # record mapping between (torch.Tensor, ColoTensor) to distinguish the same reference
-        for module_name, param_name in name_list:
+        if DEBUG:
+            print("#####"*10)
+        replaced_tensors = dict()    # record mapping between (torch.Tensor, ColoTensor) to distinguish the same reference
+        for (full_name, module_name), param_name in name_list:
             submodule = module.get_submodule(module_name)
             param = submodule.get_parameter(param_name)
+            if DEBUG:
+                print(f"[init] convert to colo module_name={full_name}, param={param_name}")
+
             if param in replaced_tensors:
                 colo_param = replaced_tensors[param]
             else:
-                colo_param = _convert_to_coloparam(param, self._device, self._dtype, self._default_pg,
-                                                   self._default_dist_spec)
+                colo_param = _convert_to_coloparam(param, self._device, self._dtype, self._default_pg, self._default_dist_spec)
                 replaced_tensors[param] = colo_param
             delattr(submodule, param_name)
             setattr(submodule, param_name, colo_param)
@@ -174,6 +204,8 @@ def post_process_colo_init_ctx(model: torch.nn.Module,
 
     torch_params = []
     for n, p in model.named_parameters():
+        if DEBUG:
+            print(f"[init] post_process_colo_init_ctx n={n}")
         if not isinstance(p, ColoParameter):
             # print(f"{n} is not a ColoParameter. We are going to converting it to ColoParameter")
             torch_params.append((n, p))
