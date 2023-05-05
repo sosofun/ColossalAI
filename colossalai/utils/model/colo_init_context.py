@@ -5,24 +5,9 @@ from torch import nn
 import torch.distributed as dist
 
 from colossalai.nn.parallel.layers import ColoEmbedding, ColoLinear, register_colo_module
-from colossalai.tensor import ColoParameter, ColoTensor, ComputePattern, ComputeSpec, ProcessGroup, ReplicaSpec, ShardSpec, DistSpecManager
-from colossalai.core import global_context as gpc
+from colossalai.tensor import ColoParameter, ColoTensor, ProcessGroup
 
 from .utils import InsertPostInitMethodToModuleSubClasses
-
-# Parameter Sharding Strategies for Tensor Parallelism
-def split_param_single_dim_tp1d(dim: int, param: ColoParameter, pg: ProcessGroup):
-    spec = (ShardSpec([dim], [pg.tp_world_size()]), ComputeSpec(ComputePattern.TP1D))
-    param.set_tensor_spec(*spec)
-
-def split_param_row_tp1d(param: ColoParameter, pg: ProcessGroup):
-    split_param_single_dim_tp1d(0, param, pg)
-
-def split_param_col_tp1d(param: ColoParameter, pg: ProcessGroup):
-    split_param_single_dim_tp1d(-1, param, pg)
-
-# find named_params includes replica
-
 
 def _named_params_with_replica(
     module: nn.Module,
@@ -93,6 +78,7 @@ class ColoInitContext(InsertPostInitMethodToModuleSubClasses):
             dtype (torch.dtype): the dtype of parameters initialized. Defults to torch.float.
             default_pg (ProcessGroup): the default process group for all initialized parameters.
             default_dist_spec: the default distributed specifications.
+            enable_tp_split: when param is a ColoParameter, call the function take 2 args (param, name), shard the tensor to avoid oom
         """
         super().__init__()
         self._device = device
@@ -201,11 +187,8 @@ def post_process_colo_init_ctx(model: torch.nn.Module,
     Raises:
         RuntimeError: raise error if
     """
-
     torch_params = []
     for n, p in model.named_parameters():
-        if DEBUG:
-            print(f"[init] post_process_colo_init_ctx n={n}")
         if not isinstance(p, ColoParameter):
             # print(f"{n} is not a ColoParameter. We are going to converting it to ColoParameter")
             torch_params.append((n, p))
