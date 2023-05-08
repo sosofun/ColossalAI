@@ -158,6 +158,7 @@ class ZeroOptimizer(ColossalaiOptimizer):
             for pid, fake_param in enumerate(group['params']):
                 chunk32 = self.param_to_chunk32[fake_param]
                 begin, end = self.param_to_range[fake_param]
+
                 chunk16 = chunk32.paired_chunk
                 if debug and (gid==0 and pid==0):
                     print(f"[grad]gid={gid},pid={pid},before move gradient_accumulation, fake_param.data={fake_param.data}")
@@ -170,14 +171,16 @@ class ZeroOptimizer(ColossalaiOptimizer):
                         if debug and (gid==0 and pid==0):
                             print(f"[grad]gid={gid}, pid={pid} before add gradient_accumulation, fake_param._saved_grad={fake_param._saved_grad}")
                             print(f"[grad]gid={gid}, pid={pid} before add gradient_accumulation, fake_param.data={fake_param.data}")
-                        fake_param._saved_grad.add_(fake_param.data)
+                        fake_param._saved_grad.add_(fake_param.data.float())
                     else:
-                        fake_param._saved_grad = fake_param.data.clone().detach()
+                        #gradient_accumulation use fp32
+                        fake_param._saved_grad = fake_param.data.clone().detach().float()
                         if debug and (gid==0 and pid==0):
                             print(f"[grad]gid={gid}, pid={pid} init gradient_accumulation, fake_param._saved_grad={fake_param._saved_grad}")
                     #only call in step()
                     if use_saved_grad:
-                        fake_param.grad = fake_param._saved_grad
+                        #gradient_accumulation fp32 to bf16
+                        fake_param.grad = fake_param._saved_grad.to(fake_param.dtype)
                     
                     if debug and (gid==0 and pid==0):
                         print(f"[grad]gid={gid},pid={pid}after gradient_accumulation, fake_param._saved_grad={fake_param._saved_grad}")
