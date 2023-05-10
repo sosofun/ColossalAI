@@ -118,12 +118,15 @@ class HybridAdam(NVMeOptimizer):
                 group_step = state['step']
                 beta1, beta2 = group['betas']
 
+                #grad accum use fp32 dtype
+                grad_data = p._saved_grad if hasattr(p, '_saved_grad') else p.grad.data
+
                 if target_device.type == 'cpu':
                     assert state['exp_avg'].device.type == 'cpu', "exp_avg should stay on cpu"
                     assert state['exp_avg_sq'].device.type == 'cpu', "exp_avg should stay on cpu"
                     self._pre_update(p, 'exp_avg', 'exp_avg_sq')
                     self.cpu_adam_op.step(state['step'], group['lr'], beta1, beta2, group['eps'], group['weight_decay'],
-                                          group['bias_correction'], p.data, p.grad.data, state['exp_avg'],
+                                          group['bias_correction'], p.data, grad_data, state['exp_avg'],
                                           state['exp_avg_sq'], div_scale)
                     self._post_update(p, 'exp_avg', 'exp_avg_sq')
 
@@ -132,7 +135,7 @@ class HybridAdam(NVMeOptimizer):
                     assert state['exp_avg_sq'].device.type == 'cuda', "exp_avg should stay on cuda"
 
                     # record the state by gruop and update at once
-                    g_l.append(p.grad.data)
+                    g_l.append(grad_data)
                     p_l.append(p.data)
                     m_l.append(state['exp_avg'])
                     v_l.append(state['exp_avg_sq'])
